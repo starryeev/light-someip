@@ -4,8 +4,8 @@
 
 #include <stdint.h>
 
-#ifndef SOME_IP_LEN
-#define SOME_IP_LEN (16u)
+#ifndef SOMEIP_IP_LEN
+#define SOMEIP_IP_LEN (16u)
 #endif
 
 int light_someip_udp_init(uint16_t port);

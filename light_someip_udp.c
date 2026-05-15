@@ -38,6 +38,7 @@
 #define UDP_BIND        (lwip_bind)
 #define UDP_SENDTO      (lwip_sendto)
 #define UDP_RECVFROM    (lwip_recvfrom)
+#define UDP_CLOSE       (lwip_close)
 #define UDP_ERRNO       (errno)
 
 #endif
@@ -53,6 +54,12 @@ static int g_udp_sock = -1;
 static int set_nonblocking(int sock) {
     /* 라즈베리파이 */
     #ifdef SOMEIP_UDP_PLATFORM_RPI
+
+    int flags = fcntl(sock, F_GETFL, 0);
+    if(flags <0) return -1;
+
+    if(fcntl(sock, f_SETFL, flags | O_NONBLOCK) < 0) return -1;
+
     #endif
 
 
@@ -82,15 +89,13 @@ int light_someip_udp_init(uint16_t port) {
     local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     local_addr.sin_port = htons(port);
 
-    if (UDP_BIND(g_udp_sock, (struct sockaddr*)&local_addr, sizeof(local_addr)) < 0)
-    {
+    if (UDP_BIND(g_udp_sock, (struct sockaddr*)&local_addr, sizeof(local_addr)) < 0) {
         UDP_CLOSE(g_udp_sock);
         g_udp_sock = -1;
         return -1;
     }
 
-    if (set_nonblocking(g_udp_sock) != 0)
-    {
+    if (set_nonblocking(g_udp_sock) != 0) {
         UDP_CLOSE(g_udp_sock);
         g_udp_sock = -1;
         return -1;
@@ -124,7 +129,7 @@ int light_someip_udp_send(const char* dst_ip, uint16_t dst_port, const uint8_t* 
 }
 
 
-int light_someip_udp_recv(uint8_t* buf, uint32_t buf_size, char remote_ip[IP_LEN], uint16_t* remote_port) {
+int light_someip_udp_recv(uint8_t* buf, uint32_t buf_size, char remote_ip[SOMEIP_IP_LEN], uint16_t* remote_port) {
     struct sockaddr_in remote_addr;
     socklen_t remote_addr_len;
     int recv_len;
@@ -156,7 +161,7 @@ int light_someip_udp_recv(uint8_t* buf, uint32_t buf_size, char remote_ip[IP_LEN
 
     snprintf(
         remote_ip,
-        IP_LEN,
+        SOMEIP_IP_LEN,
         "%u.%u.%u.%u",
         (unsigned int)((ip_u32 >> 24) & 0xFF),
         (unsigned int)((ip_u32 >> 16) & 0xFF),

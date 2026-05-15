@@ -1,6 +1,8 @@
 #include "light_someip.h"
 #include "light_someip_udp.h"
 
+#include <string.h>
+
 
 /* -------------------- Internal Variabls -------------------- */
 
@@ -39,7 +41,7 @@ static uint16_t read_uint16(const uint8_t* ptr) {
 }
 
 static uint32_t read_uint32(const uint8_t* ptr) {
-    return ((((uint32_t)ptr[0]) << 24) | (((uint32_t)ptr[0]) << 16) | (((uint32_t)ptr[0]) << 8) | (uint32_t)ptr[3]);
+    return ((((uint32_t)ptr[0]) << 24) | (((uint32_t)ptr[1]) << 16) | (((uint32_t)ptr[2]) << 8) | (uint32_t)ptr[3]);
 }
 
 static const LightSomeipEndpoint* find_endpoint(uint16_t service_id) {
@@ -80,11 +82,11 @@ static LightSomeipStatus build_packet(uint8_t* buf_ptr, const LightSomeipPacket*
     if (packet_ptr->payload_len > 0) {
         memcpy(&buf_ptr[SOMEIP_HEADER_LEN], packet_ptr->payload_arr, packet_ptr->payload_len);
     }
+
+    return SOMEIP_OK;
 }
 
 static LightSomeipStatus parse_packet(const uint8_t* raw_buf_ptr, uint32_t raw_len, LightSomeipPacket* packet_ptr) {
-    uint32_t parsed_payload_len;
-
     if(raw_buf_ptr == NULL || packet_ptr == NULL) return SOMEIP_NULL_PTR;
     if(raw_len < SOMEIP_HEADER_LEN) return SOMEIP_MALFORMED_MSG;
 
@@ -122,7 +124,7 @@ static LightSomeipStatus parse_packet(const uint8_t* raw_buf_ptr, uint32_t raw_l
 static LightSomeipStatus send_packet(const char* dst_ip, uint16_t dst_port, const LightSomeipPacket* packet_ptr) {
     if(dst_ip == NULL || packet_ptr == NULL) return SOMEIP_NULL_PTR;
     if(packet_ptr->payload_len > SOMEIP_MAX_PAYLOAD_LEN) return SOMEIP_TOO_LONG_PAYLOAD;
-    if(dst_port == NULL) return SOMEIP_WRONG_PORT;
+    if(dst_port == 0) return SOMEIP_WRONG_PORT;
 
     build_packet(g_tx_buf, packet_ptr);
 
@@ -139,7 +141,7 @@ static LightSomeipStatus send_packet(const char* dst_ip, uint16_t dst_port, cons
 
 LightSomeipStatus light_someip_init(const LightSomeipConfig* config_ptr) {
     if(config_ptr == NULL) return SOMEIP_NULL_PTR;
-    if(config_ptr->port == NULL) return SOMEIP_WRONG_PORT;
+    if(config_ptr->port == 0) return SOMEIP_WRONG_PORT;
 
     g_client_id = config_ptr->client_id;
     g_port = config_ptr->port;
@@ -192,17 +194,17 @@ LightSomeipStatus light_someip_request(LightSomeipPacket* packet_ptr) {
     packet_ptr->message_type = SOMEIP_MSGTYPE_REQUEST;
     packet_ptr->return_code = SOMEIP_RET_OK;
 
-    g_session_id++;
+    LightSomeipStatus ret = send_packet(dst_endpoint_ptr->ip, dst_endpoint_ptr->port, packet_ptr);
+    if(ret == SOMEIP_OK) g_session_id++;
 
-    return send_packet(dst_endpoint_ptr->ip, dst_endpoint_ptr->port, packet_ptr);
+    return ret;
 }
 
 LightSomeipStatus light_someip_respond(const char* remote_ip, uint16_t remote_port, const LightSomeipPacket* request_packet_ptr, LightSomeipPacket* response_packet_ptr) {
     if(!g_initialized) return SOMEIP_NOT_INITIALIZED;
     if(remote_ip == NULL || request_packet_ptr == NULL || response_packet_ptr == NULL) return SOMEIP_NULL_PTR;
-    if(remote_port == 0) SOMEIP_WRONG_PORT;
+    if(remote_port == 0) return SOMEIP_WRONG_PORT;
     if(request_packet_ptr->message_type != SOMEIP_MSGTYPE_REQUEST) return SOMEIP_NOT_REQUEST;
-    if(response_packet_ptr->message_type != SOMEIP_MSGTYPE_RESPONSE) return SOMEIP_NOT_RESPONSE;
 
     response_packet_ptr->service_id = request_packet_ptr->service_id;
     response_packet_ptr->method_id = request_packet_ptr->method_id;
@@ -218,7 +220,7 @@ LightSomeipStatus light_someip_respond(const char* remote_ip, uint16_t remote_po
     return send_packet(remote_ip,remote_port, response_packet_ptr);
 }
  
-LightSomeipStatus light_someip_event_notifiy(const LightSomeipEndpoint* dst_endpoint_ptr, LightSomeipPacket* packet_ptr) {
+LightSomeipStatus light_someip_event_notify(const LightSomeipEndpoint* dst_endpoint_ptr, LightSomeipPacket* packet_ptr) {
     if(!g_initialized) return SOMEIP_NOT_INITIALIZED;
     if(dst_endpoint_ptr == NULL || packet_ptr == NULL) return SOMEIP_NULL_PTR;
 

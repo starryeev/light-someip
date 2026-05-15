@@ -29,7 +29,9 @@ typedef enum LightSomeipStatus {
     SOMEIP_SEND_ERR,
     SOMEIP_UDP_INIT_ERR,
     SOMEIP_NOT_REQUEST,
-    SOMEIP_NOT_RESPONSE
+    SOMEIP_NOT_RESPONSE,
+    SOMEIP_NO_MSG,
+    SOMEIP_RECV_ERR
 } LightSomeipStatus;
 
 typedef enum LightSomeipMsgType {
@@ -92,22 +94,13 @@ LightSomeipStatus light_someip_packet_init(
 LightSomeipStatus light_someip_request(LightSomeipPacket* packet_ptr);
 
 /* RESPOND 메시지 송신 */
-LightSomeipStatus light_someip_respond(
-    const char* remote_ip,
-    uint16_t remote_port,
-    const LightSomeipPacket* request_packet_ptr,
-    LightSomeipPacket* response_packet_ptr
-);
+LightSomeipStatus light_someip_respond(const char* remote_ip, uint16_t remote_port, const LightSomeipPacket* request_packet_ptr, LightSomeipPacket* response_packet_ptr);
 
 /* EVENT NOTIFIFY 메시지 송신 */
-LightSomeipStatus light_someip_event_notifiy(LightSomeipPacket* packet_ptr;);
+LightSomeipStatus light_someip_event_notify(const LightSomeipEndpoint* dst_endpoint_ptr, LightSomeipPacket* packet_ptr);
 
 /* SOMEIP 패킷 수신 */
-LightSomeipStatus light_someip_recv(
-    LightSomeipPacket* packet_ptr,
-    char remote_ip[SOMEIP_IP_LEN],
-    uint16_t* remote_port
-);
+LightSomeipStatus light_someip_recv(LightSomeipPacket* packet_ptr, char remote_ip[SOMEIP_IP_LEN], uint16_t* remote_port);
 
 
 #endif
