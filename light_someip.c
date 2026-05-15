@@ -46,6 +46,7 @@ static uint32_t read_uint32(const uint8_t* ptr) {
 
 static const LightSomeipEndpoint* find_endpoint(uint16_t service_id) {
     for(int i = 0; i < SOMEIP_MAX_ROUTES; i++) {
+        if(g_routes[i].service_id == 0x0000) continue;
         if(g_routes[i].service_id == service_id) {
             return &(g_routes[i].endpoint);
         }
