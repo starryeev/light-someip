@@ -58,7 +58,7 @@ static int set_nonblocking(int sock) {
     int flags = fcntl(sock, F_GETFL, 0);
     if(flags <0) return -1;
 
-    if(fcntl(sock, f_SETFL, flags | O_NONBLOCK) < 0) return -1;
+    if(fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0) return -1;
 
     #endif
 
