@@ -69,7 +69,7 @@ LightSomeipConfig someip_cfg = {
 (void)light_someip_init(&someip_cfg);
 ```
 
-## 최소 예제
+## 예시 코드
 
 아래 코드는 application loop에서 수신 Request를 처리하고, 1초마다 Event Notification을 보내는 예시입니다.
 
@@ -154,7 +154,7 @@ LightSomeipStatus light_someip_event_notify(const LightSomeipEndpoint *dst_endpo
 LightSomeipStatus light_someip_recv(LightSomeipPacket *packet_ptr, char remote_ip[SOMEIP_IP_LEN], uint16_t *remote_port);
 ```
 
-## 제한 사항
+## 참고
 
 - Service Discovery는 포함하지 않습니다.
 - route는 정적으로 설정합니다.
