@@ -1,115 +1,104 @@
-# light-someip TC375 사용 예제
+# light-someip
 
-`light-someip`는 UDP 기반의 최소 SOME/IP Request / Response / Event Notification 예제 라이브러리입니다.
+`light-someip`는 UDP 기반의 가벼운 SOME/IP 라이브러리입니다.
 
-## 네트워크 설정
+AUTOSAR SOME/IP 전체 스택을 구현하는 목적이 아니라, 임베디드 예제나 작은 프로젝트에서 Request, Response, Event Notification 흐름을 단순하게 다루기 위한 경량 라이브러리입니다.
+
+## 주요 기능
+
+- SOME/IP 기본 헤더 생성 및 파싱
+- Request 송신
+- Request에 대한 Response 송신
+- Event Notification 송신
+- non-blocking 수신 처리
+- 정적 route table 기반 목적지 선택
+- UDP transport 계층 분리
+
+## 파일 구성
 
 ```text
-Vehicle Computer : 192.168.10.1
-Front ZCU / TC375: 192.168.10.2
-
-Vehicle Computer Client ID : 0x0001
-Front ZCU Client ID        : 0x0002
-
-SOME/IP UDP Port           : 30500
+light_someip.h       Public API, packet/config 구조체, 상태 코드
+light_someip.c       SOME/IP packet 생성, 파싱, 송수신 흐름
+light_someip_udp.h   UDP backend 인터페이스
+light_someip_udp.c   플랫폼별 UDP 구현
 ```
 
-TC375의 `Ifx_Lwip.c`에서 정적 IP를 설정합니다.
+`light_someip.c`는 SOME/IP 계층만 담당하고, 실제 UDP 송수신은 `light_someip_udp.c`로 분리되어 있습니다.
 
-```c
-IP4_ADDR(&default_ipaddr,  192, 168, 10, 2);
-IP4_ADDR(&default_netmask, 255, 255, 255, 0);
-IP4_ADDR(&default_gw,      0,   0,   0,   0);
-```
+## 플랫폼 선택
 
-`lwipopts.h`에서 DHCP를 끕니다.
-
-```c
-#define LWIP_DHCP 0
-```
-
-`light_someip_udp.c`에서 TC375 backend를 선택합니다.
+`light_someip_udp.c`에서 사용할 UDP backend를 하나만 선택합니다.
 
 ```c
 /* #define SOMEIP_UDP_PLATFORM_RPI */
 #define SOMEIP_UDP_PLATFORM_TC375
 ```
 
-## 최소 예제 코드
+현재 backend는 다음 두 가지 형태를 기준으로 나뉘어 있습니다.
 
-아래 예제는 TC375에서 Ethernet/lwIP 초기화 후 `light_someip_init()`을 호출하고, loop에서 수신 처리와 1초 주기 Event Notification을 수행합니다.
+```text
+SOMEIP_UDP_PLATFORM_RPI    Linux socket 기반 UDP
+SOMEIP_UDP_PLATFORM_TC375  TC375 + lwIP raw UDP
+```
+
+## 기본 사용 흐름
+
+1. `LightSomeipConfig`에 local client ID, local UDP port, service route를 채웁니다.
+2. `light_someip_init()`으로 라이브러리를 초기화합니다.
+3. 주기적으로 `light_someip_recv()`를 호출해 수신 packet을 확인합니다.
+4. Request를 보내려면 `light_someip_request()`를 사용합니다.
+5. 받은 Request에 응답하려면 `light_someip_respond()`를 사용합니다.
+6. Event를 보내려면 `light_someip_event_notify()`를 사용합니다.
+
+## 설정 예시
+
+정적 route table은 `service_id`를 기준으로 목적지 IP와 port를 찾습니다.
 
 ```c
-#include "Ifx_Types.h"
-#include "IfxCpu.h"
-#include "IfxStm.h"
-#include "IfxScuWdt.h"
-#include "IfxGeth_Eth.h"
-#include "Configuration.h"
-#include "ConfigurationIsr.h"
-#include "Ifx_Lwip.h"
+LightSomeipConfig someip_cfg = {
+    .client_id = 0x0002u,
+    .port = 30500u,
+    .routes = {
+        { .service_id = 0x0001u, .endpoint = { .ip = "192.168.10.1", .port = 30500u } }, /* DriveService */
+        { .service_id = 0x0002u, .endpoint = { .ip = "192.168.10.1", .port = 30500u } }, /* SensorService */
+        { .service_id = 0x0006u, .endpoint = { .ip = "192.168.10.1", .port = 30500u } }, /* AebService */
+        { .service_id = 0x0007u, .endpoint = { .ip = "192.168.10.1", .port = 30500u } }  /* InfoService */
+    }
+};
+
+(void)light_someip_init(&someip_cfg);
+```
+
+## 최소 예제
+
+아래 코드는 application loop에서 수신 Request를 처리하고, 1초마다 Event Notification을 보내는 예시입니다.
+
+```c
 #include "light_someip.h"
 
 #include <stdint.h>
 
-IfxCpu_syncEvent g_cpuSyncEvent = 0;
-
 static void AppSomeip_Process(const LightSomeipConfig *cfg, uint32_t now_ms);
 
-void core0_main(void) {
-    IfxStm_CompareConfig stmCompareConfig;
-    eth_addr_t eth_adr;
-
-    IfxCpu_enableInterrupts();
-    IfxScuWdt_disableCpuWatchdog(IfxScuWdt_getCpuWatchdogPassword());
-    IfxScuWdt_disableSafetyWatchdog(IfxScuWdt_getSafetyWatchdogPassword());
-
-    IfxCpu_emitEvent(&g_cpuSyncEvent);
-    IfxCpu_waitEvent(&g_cpuSyncEvent, 1u);
-
-    IfxStm_initCompareConfig(&stmCompareConfig);
-    stmCompareConfig.triggerPriority     = ISR_PRIORITY_OS_TICK;
-    stmCompareConfig.comparatorInterrupt = IfxStm_ComparatorInterrupt_ir0;
-    stmCompareConfig.ticks               = IFX_CFG_STM_TICKS_PER_MS * 10u;
-    stmCompareConfig.typeOfService       = IfxSrc_Tos_cpu0;
-    IfxStm_initCompare(&MODULE_STM0, &stmCompareConfig);
-
-    IfxGeth_enableModule(&MODULE_GETH);
-
-    eth_adr.addr[0] = 0xDE;
-    eth_adr.addr[1] = 0xAD;
-    eth_adr.addr[2] = 0xBE;
-    eth_adr.addr[3] = 0xEF;
-    eth_adr.addr[4] = 0xFE;
-    eth_adr.addr[5] = 0xED;
-    Ifx_Lwip_init(eth_adr);
-
+int main(void) {
     LightSomeipConfig someip_cfg = {
         .client_id = 0x0002u,
         .port = 30500u,
         .routes = {
-            { .service_id = 0x0001u, .endpoint = { .ip = "192.168.10.1", .port = 30500u } }, /* DriveService */
-            { .service_id = 0x0002u, .endpoint = { .ip = "192.168.10.1", .port = 30500u } }, /* SensorService */
-            { .service_id = 0x0006u, .endpoint = { .ip = "192.168.10.1", .port = 30500u } }, /* AebService */
-            { .service_id = 0x0007u, .endpoint = { .ip = "192.168.10.1", .port = 30500u } }  /* InfoService */
+            { .service_id = 0x0001u, .endpoint = { .ip = "192.168.10.1", .port = 30500u } },
+            { .service_id = 0x0002u, .endpoint = { .ip = "192.168.10.1", .port = 30500u } },
+            { .service_id = 0x0006u, .endpoint = { .ip = "192.168.10.1", .port = 30500u } },
+            { .service_id = 0x0007u, .endpoint = { .ip = "192.168.10.1", .port = 30500u } }
         }
     };
 
-    (void)light_someip_init(&someip_cfg);
+    if (light_someip_init(&someip_cfg) != SOMEIP_OK) {
+        return -1;
+    }
 
     while (1) {
-        Ifx_Lwip_pollTimerFlags();
-        Ifx_Lwip_pollReceiveFlags();
-        AppSomeip_Process(&someip_cfg, (uint32_t)g_TickCount_1ms);
+        AppSomeip_Process(&someip_cfg, GetTickMs());
     }
-}
-
-IFX_INTERRUPT(update_lwip_stack_isr, 0, ISR_PRIORITY_OS_TICK);
-
-void update_lwip_stack_isr(void) {
-    IfxStm_increaseCompare(&MODULE_STM0, IfxStm_Comparator_0, IFX_CFG_STM_TICKS_PER_MS);
-    g_TickCount_1ms++;
-    Ifx_Lwip_onTimerTick();
 }
 
 static void AppSomeip_Process(const LightSomeipConfig *cfg, uint32_t now_ms) {
@@ -151,15 +140,22 @@ static void AppSomeip_Process(const LightSomeipConfig *cfg, uint32_t now_ms) {
 }
 ```
 
-## API 사용 요약
+`GetTickMs()`는 예시용 함수입니다. 사용하는 플랫폼의 tick counter나 timer 값으로 바꿔 사용하면 됩니다.
+
+## API 요약
 
 ```c
-light_someip_recv(&rx, remote_ip, &remote_port);
-light_someip_respond(remote_ip, remote_port, &rx, &tx);
+LightSomeipStatus light_someip_init(const LightSomeipConfig *config_ptr);
+LightSomeipStatus light_someip_packet_init(LightSomeipPacket *packet_ptr, uint16_t service_id, uint16_t method_id, const uint8_t *payload_arr, uint32_t payload_len);
 
-light_someip_packet_init(&tx, service_id, method_id, payload, payload_len);
-light_someip_request(&tx);
-
-light_someip_packet_init(&tx, service_id, event_id, payload, payload_len);
-light_someip_event_notify(&endpoint, &tx);
+LightSomeipStatus light_someip_request(LightSomeipPacket *packet_ptr);
+LightSomeipStatus light_someip_respond(const char *remote_ip, uint16_t remote_port, const LightSomeipPacket *request_packet_ptr, LightSomeipPacket *response_packet_ptr);
+LightSomeipStatus light_someip_event_notify(const LightSomeipEndpoint *dst_endpoint_ptr, LightSomeipPacket *packet_ptr);
+LightSomeipStatus light_someip_recv(LightSomeipPacket *packet_ptr, char remote_ip[SOMEIP_IP_LEN], uint16_t *remote_port);
 ```
+
+## 제한 사항
+
+- Service Discovery는 포함하지 않습니다.
+- route는 정적으로 설정합니다.
+- payload 최대 길이는 `SOMEIP_MAX_PAYLOAD_LEN` 기준입니다.
