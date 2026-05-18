@@ -1,175 +1,259 @@
+/*
+ * light_someip_udp.c
+ *
+ * Platform selectable UDP backend for light SOME/IP.
+ *
+ * Select exactly one:
+ *   - SOMEIP_UDP_PLATFORM_RPI    : Raspberry Pi / Linux socket
+ *   - SOMEIP_UDP_PLATFORM_TC375  : TC375 + lwIP raw UDP
+ */
+
 #include "light_someip_udp.h"
 
-#include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 
-/* 라이브러리 사용 플랫폼에 따라 활성/비활성화 할 것 */
-// #define SOMEIP_UDP_PLATFORM_RPI
+/* #define SOMEIP_UDP_PLATFORM_RPI */
 #define SOMEIP_UDP_PLATFORM_TC375
 
+#if defined(SOMEIP_UDP_PLATFORM_RPI) && defined(SOMEIP_UDP_PLATFORM_TC375)
+#error "Select only one platform: SOMEIP_UDP_PLATFORM_RPI or SOMEIP_UDP_PLATFORM_TC375"
+#endif
 
-#ifdef SOMEIP_UDP_PLATFORM_RPI
+#if !defined(SOMEIP_UDP_PLATFORM_RPI) && !defined(SOMEIP_UDP_PLATFORM_TC375)
+#error "Select one platform: SOMEIP_UDP_PLATFORM_RPI or SOMEIP_UDP_PLATFORM_TC375"
+#endif
 
-#include <unistd.h>
-#include <fcntl.h>
-#include <errno.h>
-#include <sys/types.h>
-#include <sys/socket.h>
+#ifndef SOMEIP_IP_LEN
+#define SOMEIP_IP_LEN (16u)
+#endif
+
+#ifndef LIGHT_SOMEIP_UDP_MAX_DATAGRAM
+#define LIGHT_SOMEIP_UDP_MAX_DATAGRAM (1500u)
+#endif
+
+#if defined(SOMEIP_UDP_PLATFORM_RPI)
+
 #include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
 
-#define UDP_SOCKET      (socket)
-#define UDP_BIND        (bind)
-#define UDP_SENDTO      (sendto)
-#define UDP_RECVFROM    (recvfrom)
-#define UDP_CLOSE       (close)
-#define UDP_ERRNO       (errno)
+static int g_udp_fd = -1;
 
-#endif
+static int set_nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
 
-
-#ifdef SOMEIP_UDP_PLATFORM_TC375
-
-#include "lwip/sockets.h"
-#include "lwip/inet.h"
-#include "lwip/errno.h"
-
-#define UDP_SOCKET      (lwip_socket)
-#define UDP_BIND        (lwip_bind)
-#define UDP_SENDTO      (lwip_sendto)
-#define UDP_RECVFROM    (lwip_recvfrom)
-#define UDP_CLOSE       (lwip_close)
-#define UDP_ERRNO       (errno)
-
-#endif
-
-
-/* -------------------- Internal Variabls -------------------- */
-
-static int g_udp_sock = -1;
-
-
-/* -------------------- Static Function Implementations -------------------- */
-
-static int set_nonblocking(int sock) {
-    /* 라즈베리파이 */
-    #ifdef SOMEIP_UDP_PLATFORM_RPI
-
-    int flags = fcntl(sock, F_GETFL, 0);
-    if(flags <0) return -1;
-
-    if(fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0) return -1;
-
-    #endif
-
-
-    /* TC375 */
-    #ifdef SOMEIP_UDP_PLATFORM_TC375
-
-    int nonblock = 1;
-    if(lwip_ioctl(sock, FIONBIO, &nonblock) < 0) return -1;
-    return 0;
-
-    #endif
+    return (flags < 0) ? -1 : fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
-
-
-/* -------------------- Public Function Implementations -------------------- */
 
 int light_someip_udp_init(uint16_t port) {
     struct sockaddr_in local_addr;
-    if(g_udp_sock >= 0) return 0;
 
-    g_udp_sock = UDP_SOCKET(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if(g_udp_sock < 0) return -1;
+    if (port == 0u) {
+        return -1;
+    }
+
+    if (g_udp_fd >= 0) {
+        return 0;
+    }
+
+    g_udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (g_udp_fd < 0) {
+        return -1;
+    }
 
     memset(&local_addr, 0, sizeof(local_addr));
-
     local_addr.sin_family = AF_INET;
     local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     local_addr.sin_port = htons(port);
 
-    if (UDP_BIND(g_udp_sock, (struct sockaddr*)&local_addr, sizeof(local_addr)) < 0) {
-        UDP_CLOSE(g_udp_sock);
-        g_udp_sock = -1;
-        return -1;
-    }
-
-    if (set_nonblocking(g_udp_sock) != 0) {
-        UDP_CLOSE(g_udp_sock);
-        g_udp_sock = -1;
+    if ((bind(g_udp_fd, (struct sockaddr *)&local_addr, sizeof(local_addr)) < 0) || (set_nonblocking(g_udp_fd) < 0)) {
+        close(g_udp_fd);
+        g_udp_fd = -1;
         return -1;
     }
 
     return 0;
 }
 
-
-int light_someip_udp_send(const char* dst_ip, uint16_t dst_port, const uint8_t* buf, uint32_t len) {
+int light_someip_udp_send(const char *dst_ip, uint16_t dst_port, const uint8_t *buf, uint32_t len) {
     struct sockaddr_in dst_addr;
-    int sent_len;
+    ssize_t sent_len;
 
-    if (g_udp_sock < 0) return -1;
-    if (dst_ip == NULL || buf == NULL || len == 0) return -1;
+    if ((g_udp_fd < 0) || (dst_ip == NULL) || (dst_port == 0u) || (buf == NULL) || (len == 0u)) {
+        return -1;
+    }
 
     memset(&dst_addr, 0, sizeof(dst_addr));
-
     dst_addr.sin_family = AF_INET;
     dst_addr.sin_port = htons(dst_port);
-    dst_addr.sin_addr.s_addr = inet_addr(dst_ip);
 
-    if (dst_addr.sin_addr.s_addr == INADDR_NONE) return -1;
+    if (inet_pton(AF_INET, dst_ip, &dst_addr.sin_addr) != 1) {
+        return -1;
+    }
 
-    sent_len = UDP_SENDTO(g_udp_sock, buf, len, 0, (struct sockaddr*)&dst_addr, sizeof(dst_addr));
+    sent_len = sendto(g_udp_fd, buf, len, 0, (struct sockaddr *)&dst_addr, sizeof(dst_addr));
 
-    if (sent_len < 0) return -1;
-    if ((uint32_t)sent_len != len) return -1;
+    return (sent_len == (ssize_t)len) ? 0 : -1;
+}
+
+int light_someip_udp_recv(uint8_t *buf, uint32_t buf_size, char remote_ip[SOMEIP_IP_LEN], uint16_t *remote_port) {
+    struct sockaddr_in src_addr;
+    socklen_t src_len = sizeof(src_addr);
+    ssize_t recv_len;
+
+    if ((g_udp_fd < 0) || (buf == NULL) || (buf_size == 0u) || (remote_ip == NULL) || (remote_port == NULL)) {
+        return -1;
+    }
+
+    remote_ip[0] = '\0';
+    *remote_port = 0u;
+
+    recv_len = recvfrom(g_udp_fd, buf, buf_size, 0, (struct sockaddr *)&src_addr, &src_len);
+    if (recv_len < 0) {
+        return ((errno == EAGAIN) || (errno == EWOULDBLOCK)) ? 0 : -1;
+    }
+
+    if (recv_len > 0) {
+        (void)inet_ntop(AF_INET, &src_addr.sin_addr, remote_ip, SOMEIP_IP_LEN);
+        *remote_port = ntohs(src_addr.sin_port);
+    }
+
+    return (int)recv_len;
+}
+
+#endif /* SOMEIP_UDP_PLATFORM_RPI */
+
+#if defined(SOMEIP_UDP_PLATFORM_TC375)
+
+#include "lwip/err.h"
+#include "lwip/ip_addr.h"
+#include "lwip/pbuf.h"
+#include "lwip/udp.h"
+
+static struct udp_pcb *g_udp_pcb = NULL;
+
+static volatile uint8_t g_rx_ready = 0u;
+static uint8_t g_rx_buf[LIGHT_SOMEIP_UDP_MAX_DATAGRAM];
+static uint16_t g_rx_len = 0u;
+static ip_addr_t g_rx_remote_ip;
+static uint16_t g_rx_remote_port = 0u;
+
+static void light_someip_udp_on_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr, u16_t port) {
+    (void)arg;
+    (void)pcb;
+
+    if (p == NULL) {
+        return;
+    }
+
+    if ((addr == NULL) || (p->tot_len > LIGHT_SOMEIP_UDP_MAX_DATAGRAM)) {
+        pbuf_free(p);
+        return;
+    }
+
+    g_rx_len = (uint16_t)p->tot_len;
+    (void)pbuf_copy_partial(p, g_rx_buf, g_rx_len, 0u);
+    g_rx_remote_ip = *addr;
+    g_rx_remote_port = (uint16_t)port;
+    g_rx_ready = 1u;
+
+    pbuf_free(p);
+}
+
+int light_someip_udp_init(uint16_t port) {
+    err_t err;
+
+    if (port == 0u) {
+        return -1;
+    }
+
+    if (g_udp_pcb != NULL) {
+        return 0;
+    }
+
+    g_rx_ready = 0u;
+    g_rx_len = 0u;
+    g_rx_remote_port = 0u;
+
+    g_udp_pcb = udp_new();
+    if (g_udp_pcb == NULL) {
+        return -1;
+    }
+
+    err = udp_bind(g_udp_pcb, IP_ADDR_ANY, (u16_t)port);
+    if (err != ERR_OK) {
+        udp_remove(g_udp_pcb);
+        g_udp_pcb = NULL;
+        return -1;
+    }
+
+    udp_recv(g_udp_pcb, light_someip_udp_on_recv, NULL);
 
     return 0;
 }
 
+int light_someip_udp_send(const char *dst_ip, uint16_t dst_port, const uint8_t *buf, uint32_t len) {
+    ip_addr_t dst_addr;
+    struct pbuf *tx;
+    err_t err;
 
-int light_someip_udp_recv(uint8_t* buf, uint32_t buf_size, char remote_ip[SOMEIP_IP_LEN], uint16_t* remote_port) {
-    struct sockaddr_in remote_addr;
-    socklen_t remote_addr_len;
-    int recv_len;
-    uint32_t ip_u32;
-
-    if (g_udp_sock < 0) return -1;
-
-    if (buf == NULL || remote_ip == NULL || remote_port == 0) return -1;
-
-    if (buf_size == 0) return -1;
-
-    remote_ip[0] = '\0';
-    *remote_port = 0;
-
-    memset(&remote_addr, 0, sizeof(remote_addr));
-    remote_addr_len = sizeof(remote_addr);
-
-    recv_len = UDP_RECVFROM(g_udp_sock, buf, buf_size, 0, (struct sockaddr*)&remote_addr, &remote_addr_len);
-
-    if (recv_len < 0) { /* 아직 받은 데이터가 없다면 */
-        if (UDP_ERRNO == EAGAIN || UDP_ERRNO == EWOULDBLOCK) return 0;
-
+    if ((g_udp_pcb == NULL) || (dst_ip == NULL) || (dst_port == 0u) || (buf == NULL) || (len == 0u) || (len > 0xFFFFu)) {
         return -1;
     }
- 
-    if (recv_len == 0) return 0;
 
-    ip_u32 = ntohl(remote_addr.sin_addr.s_addr);
+    if (ipaddr_aton(dst_ip, &dst_addr) == 0) {
+        return -1;
+    }
 
-    snprintf(
-        remote_ip,
-        SOMEIP_IP_LEN,
-        "%u.%u.%u.%u",
-        (unsigned int)((ip_u32 >> 24) & 0xFF),
-        (unsigned int)((ip_u32 >> 16) & 0xFF),
-        (unsigned int)((ip_u32 >> 8) & 0xFF),
-        (unsigned int)(ip_u32 & 0xFF)
-    );
+    tx = pbuf_alloc(PBUF_TRANSPORT, (u16_t)len, PBUF_RAM);
+    if (tx == NULL) {
+        return -1;
+    }
 
-    *remote_port = ntohs(remote_addr.sin_port);
+    err = pbuf_take(tx, buf, (u16_t)len);
+    if (err == ERR_OK) {
+        err = udp_sendto(g_udp_pcb, tx, &dst_addr, (u16_t)dst_port);
+    }
 
-    return recv_len;
+    pbuf_free(tx);
+
+    return (err == ERR_OK) ? 0 : -1;
 }
+
+int light_someip_udp_recv(uint8_t *buf, uint32_t buf_size, char remote_ip[SOMEIP_IP_LEN], uint16_t *remote_port) {
+    uint16_t copy_len;
+
+    if ((g_udp_pcb == NULL) || (buf == NULL) || (buf_size == 0u) || (remote_ip == NULL) || (remote_port == NULL)) {
+        return -1;
+    }
+
+    remote_ip[0] = '\0';
+    *remote_port = 0u;
+
+    if (g_rx_ready == 0u) {
+        return 0;
+    }
+
+    if (g_rx_len > buf_size) {
+        g_rx_ready = 0u;
+        g_rx_len = 0u;
+        return -1;
+    }
+
+    copy_len = g_rx_len;
+    memcpy(buf, g_rx_buf, copy_len);
+    (void)ipaddr_ntoa_r(&g_rx_remote_ip, remote_ip, SOMEIP_IP_LEN);
+    *remote_port = g_rx_remote_port;
+
+    g_rx_ready = 0u;
+    g_rx_len = 0u;
+
+    return (int)copy_len;
+}
+
+#endif /* SOMEIP_UDP_PLATFORM_TC375 */
